@@ -1,0 +1,11 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.github$
+^data-raw$
+^tutorial$
+^report$
+^README\.Rmd$
+^\.gitignore$
+^.*\.zip$
+^.*\.tar\.gz$
+^Sujet Projet SISE.*\.pdf$

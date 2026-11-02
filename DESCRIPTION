@@ -1,0 +1,29 @@
+Package: ldapkg
+Type: Package
+Title: Predictive Linear Discriminant Analysis with an R6 Interface
+Version: 0.1.0
+Authors@R: c(
+    person("Abdoul", "Ouedraogo", email = "ouedraogoabdoulfaisal47@gmail.com", role = c("aut", "cre")))
+Author: Abdoul Ouedraogo [aut, cre]
+Maintainer: Abdoul Ouedraogo <ouedraogoabdoulfaisal47@gmail.com>
+Description: Predictive linear discriminant analysis (LDA) for a categorical
+    target with two or more classes. The computational core relies on
+    sufficient statistics (class means, within-class and total scatter
+    matrices) and Cholesky factorisations. The package returns the
+    classification functions, class posterior probabilities, Wilks' lambda
+    with Rao's F approximation, partial Wilks' lambda for each explanatory
+    variable, canonical discriminant axes, resubstitution and cross-validated
+    error rates, and stepwise variable selection (forward, backward,
+    stepwise) in which categorical predictors are handled as blocks of dummy
+    variables. A Shiny application illustrating all features is included.
+License: MIT + file LICENSE
+URL: https://github.com/Abdoul-Faisal-Ouedraogo/ldapkg
+BugReports: https://github.com/Abdoul-Faisal-Ouedraogo/ldapkg/issues
+Encoding: UTF-8
+Depends: R (>= 4.0.0)
+Imports: R6, stats, graphics, grDevices, utils
+Suggests: testthat (>= 3.0.0), MASS, knitr, rmarkdown, shiny, DT,
+    data.table, readxl
+Config/testthat/edition: 3
+Roxygen: list(markdown = TRUE)
+Config/roxygen2/version: 8.1.0

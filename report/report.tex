@@ -1,0 +1,202 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[french]{babel}
+\usepackage{lmodern}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\geometry{margin=2.3cm}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+
+\title{Analyse discriminante prédictive\\
+       \large Conception et implémentation du package R \texttt{ldapkg}}
+\author{Abdoul-Faisal Ouedraogo}
+\date{M2 SISE -- Programmation R -- 2026--2027}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Objectif et positionnement}
+
+Le projet consiste à fournir une analyse discriminante linéaire prédictive
+(LDA) utilisable comme un package R installable depuis GitHub. L'objectif
+est double : produire une décision de classe pour de nouveaux individus et
+fournir des sorties interprétables sur la séparation des classes, les
+variables et les axes discriminants.
+
+L'interface publique est une classe R6 inspirée de scikit-learn :
+\texttt{LDAClassifier\$new()}, \texttt{\$fit(X, y)}, \texttt{\$predict(X)}
+et \texttt{\$predict\_proba(X)}. Les méthodes \texttt{\$summary()},
+\texttt{\$plot()}, \texttt{\$cv()} et \texttt{\$transform()} complètent
+l'utilisation analytique et prédictive.
+
+\section{Modèle statistique}
+
+On note $K$ le nombre de classes, $n_k$ l'effectif de la classe $k$,
+$m_k$ son vecteur moyen et $m$ la moyenne globale. Les matrices de sommes
+des carrés et produits croisés intra-classes et inter-classes sont
+\[
+ E = \sum_{k=1}^K\sum_{i\in k}(x_i-m_k)(x_i-m_k)^\top,\qquad
+ B = \sum_{k=1}^K n_k(m_k-m)(m_k-m)^\top.
+\]
+La matrice totale est $T=E+B$ et la covariance poolée est
+$W=E/(n-K)$.
+
+Pour une observation $x$, la fonction de classification de la classe $k$ est
+\[
+ \delta_k(x)=x^\top W^{-1}m_k
+ -\frac12m_k^\top W^{-1}m_k+\log(\pi_k),
+\]
+où $\pi_k$ est la probabilité a priori. La classe prédite maximise
+\(\delta_k(x)\). Les probabilités a posteriori sont obtenues par une
+normalisation softmax stable des scores.
+
+\section{Architecture du package}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Module} & \textbf{Responsabilité} \\
+\midrule
+\texttt{preprocess.R} & validation de l'encodage et variables catégorielles \\
+\texttt{core.R} & statistiques suffisantes, Cholesky, Wilks, axes \\
+\texttt{selection.R} & sélection forward, backward et stepwise \\
+\texttt{LDAClassifier.R} & classe R6, apprentissage et prédiction \\
+\texttt{methods.R} & méthodes S3 \texttt{predict}, \texttt{summary}, \texttt{plot} \\
+\texttt{examples.R} & chargement des jeux de données exemples \\
+\texttt{run\_app.R} & lancement de l'application Shiny \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Le package est limité à des dépendances légères pour le coeur
+(\texttt{R6}, \texttt{stats}, \texttt{graphics}, \texttt{grDevices} et
+\texttt{utils}). Les dépendances de l'application, comme \texttt{shiny},
+\texttt{DT} et \texttt{readxl}, sont optionnelles.
+
+\section{Algorithmes et choix d'implémentation}
+
+\subsection{Calcul efficace}
+
+Les moyennes par classe sont obtenues avec \texttt{rowsum()} et les matrices
+avec \texttt{crossprod()}. Le calcul ne construit donc pas une liste de
+produits individu par individu. Les résolutions matricielles utilisent des
+factorisations de Cholesky plutôt qu'une inversion générale.
+
+Les colonnes constantes et les colonnes linéairement dépendantes sont
+détectées avant la factorisation. Elles sont retirées avec un avertissement
+explicite. Les variables sont ensuite standardisées sur l'échelle intra-classe,
+ce qui améliore le conditionnement sans modifier les prédictions de la LDA.
+
+\subsection{Variables catégorielles}
+
+Une variable factorielle ou caractère est codée par $q-1$ indicatrices, la
+première modalité étant la référence. La spécification (noms et niveaux) est
+conservée dans le modèle. À la prédiction, les nouvelles données sont donc
+encodées dans le même ordre. Un niveau inconnu ne provoque pas de plantage :
+la ligne concernée est signalée et reçoit une sortie \texttt{NA}.
+
+\subsection{Sélection de variables}
+
+La sélection travaille sur les matrices $E$ et $T$ déjà calculées. Pour une
+variable candidate, le complément de Schur fournit la contribution
+conditionnelle. Le test repose sur l'approximation $F$ de Rao associée à la
+lambda de Wilks. Les variables catégorielles sont toujours traitées comme
+un bloc de colonnes indicatrices.
+
+\begin{enumerate}[label=\arabic*.]
+\item Initialiser l'ensemble sélectionné selon la stratégie choisie.
+\item Calculer la lambda et la p-valeur de chaque candidate.
+\item Ajouter la meilleure candidate si elle respecte \texttt{alpha\_enter}.
+\item Pour la stratégie stepwise, retirer la variable la moins utile si sa
+      p-valeur dépasse \texttt{alpha\_stay}.
+\item Arrêter lorsqu'aucune modification n'est possible.
+\end{enumerate}
+
+\subsection{Validation}
+
+\texttt{\$cv()} réalise une validation croisée stratifiée. Le nombre de plis
+est automatiquement limité à l'effectif de la plus petite classe afin que
+chaque apprentissage conserve toutes les classes. La sélection de variables
+est recalculée dans chaque pli, ce qui évite une fuite d'information.
+
+\section{Sorties interprétables}
+
+Le modèle expose les coefficients et constantes des fonctions de
+classification, les probabilités a priori, les effectifs et moyennes de
+classe, ainsi que les variables et colonnes retenues. La lambda de Wilks
+\(\det(E)/\det(T)\), le test $F$ de Rao, les lambdas partielles, les
+p-valeurs et les tolérances permettent d'étudier la contribution des
+variables.
+
+Les axes canoniques sont calculés par décomposition singulière et normalisés
+pour avoir une variance intra-classe unité. Le modèle expose les valeurs
+propres, les corrélations canoniques, les coordonnées des individus et les
+centroïdes de classe. Les performances comprennent la matrice de confusion,
+l'accuracy, le rappel, la précision, le score F1 et la validation croisée.
+
+\section{Application Shiny}
+
+L'application permet de charger un fichier tabulé, CSV ou Excel, ou un jeu de
+données exemple. L'utilisateur choisit la cible, les variables actives et les
+variables illustratives, puis règle les a priori, la sélection, la taille du
+jeu test et le nombre de plis. Les résultats sont présentés sous forme de
+tableaux, graphiques et fonctions de classification.
+
+Le déploiement est disponible pour un individu saisi dans un formulaire et
+pour un fichier d'individus supplémentaires. Les probabilités par classe
+peuvent être téléchargées avec la classe prédite. Les erreurs de lecture, les
+niveaux inconnus et les valeurs manquantes sont affichés sous forme de
+notifications plutôt que de faire disparaître silencieusement le résultat.
+
+\section{Vérification et reproductibilité}
+
+Les tests de \texttt{testthat} comparent les probabilités et les axes à
+\texttt{MASS::lda()}, la lambda à \texttt{stats::manova()}, et couvrent les
+variables catégorielles, les valeurs manquantes, les colonnes redondantes,
+la sélection, la validation croisée et les prédictions inconnues.
+
+Les commandes de vérification sont :
+\begin{verbatim}
+devtools::document()
+devtools::test()
+devtools::check()
+devtools::build()
+\end{verbatim}
+
+Le workflow GitHub Actions exécute automatiquement \texttt{R CMD check} sur
+Linux, Windows et macOS. Le tutoriel anglais dans \texttt{tutorial/} est
+reproductible avec les jeux de données fournis dans
+\texttt{inst/extdata/}.
+
+\section{Limites et pistes d'amélioration}
+
+La méthode suppose une covariance commune aux classes et reste sensible aux
+échantillons très petits. Pour des données de très grande dimension, une
+régularisation de la covariance ou une réduction de dimension préalable
+serait pertinente. Une extension future pourrait proposer un paramètre de
+shrinkage, des courbes ROC et une calibration des probabilités, tout en
+conservant l'interface actuelle.
+
+\section{Références}
+
+\begin{itemize}
+\item Fisher, R. A. (1936). The use of multiple measurements in taxonomic
+      problems. \emph{Annals of Eugenics}, 7, 179--188.
+\item Rao, C. R. (1951). An asymptotic expansion of the distribution of
+      Wilks' criterion. \emph{Bulletin of the International Statistical
+      Institute}, 33, 177--180.
+\item Venables, W. N. and Ripley, B. D. (2002).
+      \emph{Modern Applied Statistics with S}. Springer.
+\item R Core Team (2026). \emph{R: A Language and Environment for Statistical
+      Computing}. R Foundation for Statistical Computing.
+\end{itemize}
+
+\end{document}
