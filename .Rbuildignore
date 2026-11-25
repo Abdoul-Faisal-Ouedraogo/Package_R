@@ -9,3 +9,4 @@
 ^.*\.zip$
 ^.*\.tar\.gz$
 ^Sujet Projet SISE.*\.pdf$
+^readme1\.md$

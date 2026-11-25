@@ -26,4 +26,4 @@ Suggests: testthat (>= 3.0.0), MASS, knitr, rmarkdown, shiny, DT,
     data.table, readxl
 Config/testthat/edition: 3
 Roxygen: list(markdown = TRUE)
-Config/roxygen2/version: 8.1.0
+Config/roxygen2/version: 8.1.1

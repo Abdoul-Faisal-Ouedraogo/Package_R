@@ -363,14 +363,26 @@ LDAClassifier <- R6Class("LDAClassifier",
     },
 
     #' @description Stratified k-fold cross-validation. A new model with the
-    #'   same settings (including variable selection) is fitted on each fold.
+    #'   same settings (priors, variable selection and thresholds) is fitted on
+    #'   each training fold and predicts the held-out fold, so the estimate
+    #'   also accounts for the variability of variable selection.
     #' @param X,y Data as in `$fit()`.
     #' @param folds Number of folds (at least 2). It is capped at the size of
     #'   the smallest class so every training fold contains all classes.
-    #' @param seed Optional integer; sets the global random seed before the
-    #'   folds are drawn.
-    #' @return Invisibly, a list with `accuracy`, `error_rate`, `confusion`,
-    #'   `per_class`, `folds` and `n`; also stored in `$cv_results`.
+    #' @param seed Optional integer used to draw the folds. The global random
+    #'   number generator state of the session is restored afterwards.
+    #' @return Invisibly, a list (also stored in `$cv_results`) with:
+    #'   * `accuracy`, `error_rate`: computed on the classified observations;
+    #'   * `confusion`: cross-validated confusion matrix (observed in rows);
+    #'   * `per_class`: recall, precision and F1 of each class;
+    #'   * `global`: global metrics (see `$global_metrics()`);
+    #'   * `fold_accuracy`: accuracy of each fold, and `accuracy_se` its
+    #'     standard error;
+    #'   * `selection_frequency`: when variable selection is used, the
+    #'     proportion of folds in which each variable was selected;
+    #'   * `folds`, `n` (classified observations) and `n_unclassified`
+    #'     (held-out rows that could not be classified, e.g. a factor level
+    #'     absent from the training fold).
     cv = function(X, y, folds = 10L, seed = NULL) {
       prm <- private$.params
       d <- private$prepare_xy(X, y)
@@ -380,6 +392,9 @@ LDAClassifier <- R6Class("LDAClassifier",
       folds <- suppressWarnings(as.integer(folds))
       if (length(folds) != 1L || is.na(folds) || folds < 2L) {
         stop("'folds' must be an integer >= 2.", call. = FALSE)
+      }
+      if (nlevels(y) < 2L) {
+        stop("'y' must have at least two non-empty classes.", call. = FALSE)
       }
       class_sizes <- table(y)
       max_folds <- min(class_sizes)
@@ -397,13 +412,26 @@ LDAClassifier <- R6Class("LDAClassifier",
         stop("Each cross-validation training fold must contain more observations ",
              "than the number of classes.", call. = FALSE)
       }
-      if (!is.null(seed)) set.seed(seed)
+
+      # stratified fold assignment; the user's RNG state is left untouched
+      if (!is.null(seed)) {
+        if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) {
+          old_seed <- get(".Random.seed", envir = globalenv(), inherits = FALSE)
+          on.exit(assign(".Random.seed", old_seed, envir = globalenv()), add = TRUE)
+        } else {
+          on.exit(rm(".Random.seed", envir = globalenv()), add = TRUE)
+        }
+        set.seed(seed)
+      }
       fold <- integer(n)
       for (lv in levels(y)) {
         id <- which(y == lv)
         if (length(id) > 0L) fold[id] <- sample(rep_len(seq_len(folds), length(id)))
       }
+
       pred <- factor(rep(NA_character_, n), levels = levels(y))
+      fold_acc <- rep(NA_real_, folds)
+      selected <- vector("list", folds)
       for (f in seq_len(folds)) {
         te <- which(fold == f)
         if (length(te) == 0L) next
@@ -411,24 +439,70 @@ LDAClassifier <- R6Class("LDAClassifier",
         m <- LDAClassifier$new(priors = prm$priors, selection = prm$selection,
                                alpha_enter = prm$alpha_enter, alpha_stay = prm$alpha_stay)
         suppressMessages(suppressWarnings(m$fit(X[tr, , drop = FALSE], y[tr])))
-        pred[te] <- m$predict(X[te, , drop = FALSE])
+        pred[te] <- suppressWarnings(m$predict(X[te, , drop = FALSE]))
+        ok <- !is.na(pred[te])
+        if (any(ok)) fold_acc[f] <- mean(pred[te][ok] == y[te][ok])
+        selected[[f]] <- m$variables
+      }
+
+      n_na <- sum(is.na(pred))
+      if (n_na > 0L) {
+        warning(n_na, " held-out observation(s) could not be classified (factor level ",
+                "absent from the training fold) and are excluded from the metrics.",
+                call. = FALSE)
       }
       cm <- table(Observed = y, Predicted = pred)
-      res <- list(accuracy = sum(diag(cm)) / sum(cm),
-                  error_rate = 1 - sum(diag(cm)) / sum(cm),
-                  confusion = cm, per_class = .class_metrics(cm),
-                  folds = folds, n = sum(cm))
+      if (sum(cm) == 0L) {
+        stop("No held-out observation could be classified.", call. = FALSE)
+      }
+      glob <- .global_metrics(cm)
+      fa <- fold_acc[!is.na(fold_acc)]
+      sel_freq <- NULL
+      if (prm$selection != "none") {
+        all_vars <- unique(c(unlist(selected), names(X)))
+        sel_freq <- vapply(all_vars, function(v) mean(vapply(selected, function(s)
+          v %in% s, logical(1L))), numeric(1L))
+        sel_freq <- sort(sel_freq, decreasing = TRUE)
+      }
+      res <- list(accuracy = glob[["accuracy"]],
+                  error_rate = glob[["error_rate"]],
+                  confusion = cm,
+                  per_class = .class_metrics(cm),
+                  global = glob,
+                  fold_accuracy = fold_acc,
+                  accuracy_se = if (length(fa) > 1L) stats::sd(fa) / sqrt(length(fa)) else NA_real_,
+                  selection_frequency = sel_freq,
+                  folds = folds,
+                  n = as.integer(sum(cm)),
+                  n_unclassified = as.integer(n_na))
       self$cv_results <- res
       invisible(res)
     },
 
-    #' @description Per-class recall, precision and F1 score.
+    #' @description Per-class recall, precision and F1 score (one class
+    #'   against the others).
     #' @param confusion A confusion matrix (observed in rows, predicted in
-    #'   columns). Defaults to the resubstitution matrix `$confusion`.
-    #' @return A data frame with one row per class.
+    #'   columns), for example `$cv_results$confusion` or a table computed on a
+    #'   test sample. Defaults to the resubstitution matrix `$confusion`.
+    #' @return A data frame with one row per class: `class`, `n` (number of
+    #'   observations of the class), `recall`, `precision` and `f1`. A metric
+    #'   that is undefined (class never observed or never predicted) is `NA`.
     class_metrics = function(confusion = NULL) {
       private$check_fitted()
       .class_metrics(if (is.null(confusion)) self$confusion else confusion)
+    },
+
+    #' @description Global performance measures.
+    #' @param confusion A confusion matrix (observed in rows, predicted in
+    #'   columns). Defaults to the resubstitution matrix `$confusion`.
+    #' @return A named numeric vector: `n`, `accuracy`, `error_rate`,
+    #'   `balanced_accuracy` (mean recall, robust to unequal class sizes),
+    #'   `macro_precision`, `macro_recall`, `macro_f1`, `weighted_f1` (classes
+    #'   weighted by their size) and Cohen's `kappa` (agreement corrected for
+    #'   chance). In the macro averages an undefined F1 counts as 0.
+    global_metrics = function(confusion = NULL) {
+      private$check_fitted()
+      .global_metrics(if (is.null(confusion)) self$confusion else confusion)
     },
 
     #' @description Describe the input variables required by `$predict()`
@@ -481,7 +555,8 @@ LDAClassifier <- R6Class("LDAClassifier",
 
     #' @description Detailed report: priors, classification functions, global
     #'   test, variable importance, discriminant axes, confusion matrix,
-    #'   per-class metrics, cross-validation and selection steps.
+    #'   global and per-class metrics, cross-validation (if `$cv()` was run)
+    #'   and selection steps.
     #' @param digits Number of significant digits.
     #' @param ... Ignored.
     #' @return Invisibly, a list with the printed components.
@@ -523,7 +598,11 @@ LDAClassifier <- R6Class("LDAClassifier",
 
       line("Resubstitution confusion matrix (observed in rows)")
       print(self$confusion)
-      cat(sprintf("Accuracy: %.4f | Error rate: %.4f\n", self$accuracy, 1 - self$accuracy))
+      gm <- .global_metrics(self$confusion)
+      cat(sprintf(paste0("Accuracy: %.4f | Error rate: %.4f | Balanced accuracy: %.4f",
+                         " | Macro F1: %.4f | Kappa: %.4f\n"),
+                  gm[["accuracy"]], gm[["error_rate"]], gm[["balanced_accuracy"]],
+                  gm[["macro_f1"]], gm[["kappa"]]))
       mt <- .class_metrics(self$confusion)
       print(mt, row.names = FALSE, digits = digits)
 
@@ -531,7 +610,25 @@ LDAClassifier <- R6Class("LDAClassifier",
         cv <- self$cv_results
         line(sprintf("%d-fold cross-validation", cv$folds))
         print(cv$confusion)
-        cat(sprintf("CV accuracy: %.4f | CV error rate: %.4f\n", cv$accuracy, cv$error_rate))
+        cat(sprintf("CV accuracy: %.4f", cv$accuracy))
+        if (!is.null(cv$accuracy_se) && is.finite(cv$accuracy_se)) {
+          cat(sprintf(" (s.e. %.4f)", cv$accuracy_se))
+        }
+        cat(sprintf(" | CV error rate: %.4f", cv$error_rate))
+        if (!is.null(cv$global)) {
+          cat(sprintf(" | Balanced accuracy: %.4f | Macro F1: %.4f",
+                      cv$global[["balanced_accuracy"]], cv$global[["macro_f1"]]))
+        }
+        cat("\n")
+        if (isTRUE(cv$n_unclassified > 0L)) {
+          cat(sprintf("%d held-out observation(s) could not be classified.\n",
+                      cv$n_unclassified))
+        }
+        print(cv$per_class, row.names = FALSE, digits = digits)
+        if (!is.null(cv$selection_frequency)) {
+          cat("Proportion of folds in which each variable was selected:\n")
+          print(round(cv$selection_frequency, 2))
+        }
       }
       if (!is.null(self$selection_history)) {
         line(sprintf("Variable selection (%s)", private$.params$selection))
@@ -544,7 +641,7 @@ LDAClassifier <- R6Class("LDAClassifier",
       invisible(list(classes = cls, wilks_test = self$wilks_test,
                      coefficients = rbind(self$coefficients, "(Constant)" = self$intercept),
                      var_importance = vi, axes = ax, confusion = self$confusion,
-                     class_metrics = mt, cv = self$cv_results,
+                     class_metrics = mt, global_metrics = gm, cv = self$cv_results,
                      selection = self$selection_history))
     },
 

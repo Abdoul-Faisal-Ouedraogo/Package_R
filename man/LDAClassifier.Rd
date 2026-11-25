@@ -167,6 +167,7 @@ missing values are removed).}
     \item \href{#method-LDAClassifier-transform}{\code{LDAClassifier$transform()}}
     \item \href{#method-LDAClassifier-cv}{\code{LDAClassifier$cv()}}
     \item \href{#method-LDAClassifier-class_metrics}{\code{LDAClassifier$class_metrics()}}
+    \item \href{#method-LDAClassifier-global_metrics}{\code{LDAClassifier$global_metrics()}}
     \item \href{#method-LDAClassifier-describe_inputs}{\code{LDAClassifier$describe_inputs()}}
     \item \href{#method-LDAClassifier-print}{\code{LDAClassifier$print()}}
     \item \href{#method-LDAClassifier-summary}{\code{LDAClassifier$summary()}}
@@ -314,7 +315,9 @@ that cannot be classified).
 \if{latex}{\out{\hypertarget{method-LDAClassifier-cv}{}}}
 \subsection{\code{LDAClassifier$cv()}}{
   Stratified k-fold cross-validation. A new model with the
-same settings (including variable selection) is fitted on each fold.
+same settings (priors, variable selection and thresholds) is fitted on
+each training fold and predicts the held-out fold, so the estimate
+also accounts for the variability of variable selection.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{LDAClassifier$cv(X, y, folds = 10L, seed = NULL)}
@@ -326,14 +329,26 @@ same settings (including variable selection) is fitted on each fold.
       \item{\code{X, y}}{Data as in \verb{$fit()}.}
       \item{\code{folds}}{Number of folds (at least 2). It is capped at the size of
 the smallest class so every training fold contains all classes.}
-      \item{\code{seed}}{Optional integer; sets the global random seed before the
-folds are drawn.}
+      \item{\code{seed}}{Optional integer used to draw the folds. The global random
+number generator state of the session is restored afterwards.}
     }
     \if{html}{\out{</div>}}
   }
   \subsection{Returns}{
-    Invisibly, a list with \code{accuracy}, \code{error_rate}, \code{confusion},
-\code{per_class}, \code{folds} and \code{n}; also stored in \verb{$cv_results}.
+    Invisibly, a list (also stored in \verb{$cv_results}) with:
+\itemize{
+\item \code{accuracy}, \code{error_rate}: computed on the classified observations;
+\item \code{confusion}: cross-validated confusion matrix (observed in rows);
+\item \code{per_class}: recall, precision and F1 of each class;
+\item \code{global}: global metrics (see \verb{$global_metrics()});
+\item \code{fold_accuracy}: accuracy of each fold, and \code{accuracy_se} its
+standard error;
+\item \code{selection_frequency}: when variable selection is used, the
+proportion of folds in which each variable was selected;
+\item \code{folds}, \code{n} (classified observations) and \code{n_unclassified}
+(held-out rows that could not be classified, e.g. a factor level
+absent from the training fold).
+}
   }
 }
 
@@ -341,10 +356,37 @@ folds are drawn.}
 \if{html}{\out{<a id="method-LDAClassifier-class_metrics"></a>}}
 \if{latex}{\out{\hypertarget{method-LDAClassifier-class_metrics}{}}}
 \subsection{\code{LDAClassifier$class_metrics()}}{
-  Per-class recall, precision and F1 score.
+  Per-class recall, precision and F1 score (one class
+against the others).
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{LDAClassifier$class_metrics(confusion = NULL)}
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Arguments}{
+    \if{html}{\out{<div class="arguments">}}
+    \describe{
+      \item{\code{confusion}}{A confusion matrix (observed in rows, predicted in
+columns), for example \verb{$cv_results$confusion} or a table computed on a
+test sample. Defaults to the resubstitution matrix \verb{$confusion}.}
+    }
+    \if{html}{\out{</div>}}
+  }
+  \subsection{Returns}{
+    A data frame with one row per class: \code{class}, \code{n} (number of
+observations of the class), \code{recall}, \code{precision} and \code{f1}. A metric
+that is undefined (class never observed or never predicted) is \code{NA}.
+  }
+}
+
+\if{html}{\out{<hr>}}
+\if{html}{\out{<a id="method-LDAClassifier-global_metrics"></a>}}
+\if{latex}{\out{\hypertarget{method-LDAClassifier-global_metrics}{}}}
+\subsection{\code{LDAClassifier$global_metrics()}}{
+  Global performance measures.
+  \subsection{Usage}{
+    \if{html}{\out{<div class="r">}}
+    \preformatted{LDAClassifier$global_metrics(confusion = NULL)}
     \if{html}{\out{</div>}}
   }
   \subsection{Arguments}{
@@ -356,7 +398,11 @@ columns). Defaults to the resubstitution matrix \verb{$confusion}.}
     \if{html}{\out{</div>}}
   }
   \subsection{Returns}{
-    A data frame with one row per class.
+    A named numeric vector: \code{n}, \code{accuracy}, \code{error_rate},
+\code{balanced_accuracy} (mean recall, robust to unequal class sizes),
+\code{macro_precision}, \code{macro_recall}, \code{macro_f1}, \code{weighted_f1} (classes
+weighted by their size) and Cohen's \code{kappa} (agreement corrected for
+chance). In the macro averages an undefined F1 counts as 0.
   }
 }
 
@@ -405,7 +451,8 @@ columns). Defaults to the resubstitution matrix \verb{$confusion}.}
 \subsection{\code{LDAClassifier$summary()}}{
   Detailed report: priors, classification functions, global
 test, variable importance, discriminant axes, confusion matrix,
-per-class metrics, cross-validation and selection steps.
+global and per-class metrics, cross-validation (if \verb{$cv()} was run)
+and selection steps.
   \subsection{Usage}{
     \if{html}{\out{<div class="r">}}
     \preformatted{LDAClassifier$summary(digits = 4, ...)}
